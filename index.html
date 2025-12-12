@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>WebXR World - Gaussian Splat Background</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+
+  <!-- 
+       IMPORTANT: Gaussian Splatting uses SharedArrayBuffer for performance.
+       If hosting on your own server, you must set these headers:
+       Cross-Origin-Opener-Policy: same-origin
+       Cross-Origin-Embedder-Policy: require-corp
+       
+       (GitHub Pages does not support these headers easily, so the library 
+       will fall back to a slower mode, which is fine for demos).
+  -->
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/",
+      "@mkkellogg/gaussian-splats-3d": "https://esm.sh/@mkkellogg/gaussian-splats-3d@0.4.1?external=three"
+    }
+  }
+  </script>
+
+  <style>
+    body { 
+      margin: 0; 
+      overflow: hidden;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      color: white;
+    }
+    #overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      pointer-events: none; /* Let clicks pass through if needed, but button handles them */
+    }
+    #start-button {
+      pointer-events: auto;
+      background: rgba(0, 0, 0, 0.6);
+      border: 2px solid #ffffff;
+      color: #ffffff;
+      padding: 15px 40px;
+      font-size: 24px;
+      cursor: pointer;
+      border-radius: 30px;
+      transition: background 0.3s;
+      margin-top: 20px;
+    }
+    #start-button:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    #status-text {
+      margin-top: 10px;
+      font-size: 14px;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="overlay">
+    <h1>Enter World 1</h1>
+    <p>WebXR Experience with Gaussian Splat Background</p>
+    <button id="start-button">Start XR</button>
+    <div id="status-text">Ready</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { VRButton } from 'three/addons/webxr/VRButton.js';
+    import { GaussianSplatMesh } from '@mkkellogg/gaussian-splats-3d';
+
+    // --- CONFIGURATION ---
+    const CONSTANTS = {
+      // REPLACE THIS with your actual GitHub Raw URL
+      // Format: https://raw.githubusercontent.com/USERNAME/REPO/main/World1.spz
+      SPZ_URL: 'https://raw.githubusercontent.com/google/it-cert-automation-practice/master/Course3/Lab4/validations.py', // Placeholder: Update this to your 'World 1.spz' raw link!
+      PLAYER_HEIGHT: 1.6
+    };
+
+    let camera, scene, renderer;
+    let splatMesh;
+    let controllers = [];
+    let isControllerSelectionPhase = false; // Logic preservation
+    
+    // UI Elements
+    const overlay = document.getElementById('overlay');
+    const statusText = document.getElementById('status-text');
+    const startButton = document.getElementById('start-button');
+
+    init();
+    animate();
+
+    function init() {
+      // 1. Scene Setup
+      scene = new THREE.Scene();
+      // Optional: Add some fog or basic background color to blend edges if splat doesn't cover everything
+      scene.background = new THREE.Color(0x101010);
+
+      // 2. Camera Setup
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+      
+      // 3. Renderer Setup
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // 4. Lights (Splats are self-illuminated, but lights help other objects)
+      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+      light.position.set(0.5, 1, 0.25);
+      scene.add(light);
+
+      // 5. XR Setup
+      const xrButton = VRButton.createButton(renderer);
+      xrButton.addEventListener('click', () => {
+        overlay.style.display = 'none';
+      });
+      // Hide the default button and use ours to trigger it
+      xrButton.style.display = 'none'; 
+      document.body.appendChild(xrButton);
+
+      startButton.addEventListener('click', () => {
+        if (navigator.xr) {
+           xrButton.click();
+        } else {
+           statusText.innerText = "WebXR not supported on this device/browser.";
+        }
+      });
+
+      // 6. Controllers Setup
+      setupControllers();
+
+      // 7. Load Gaussian Splat World
+      loadSceneBackground();
+
+      window.addEventListener('resize', onWindowResize);
+    }
+
+    function setupControllers() {
+      // Setup controllers logic preserving the original structure intents
+      const controllerModelFactory = new THREE.Group(); // Placeholder for factory if needed
+
+      for (let i = 0; i < 2; i++) {
+        const controller = renderer.xr.getController(i);
+        
+        // Event listeners for interaction
+        controller.addEventListener('selectstart', onSelectStart);
+        controller.addEventListener('selectend', onSelectEnd);
+        
+        // Connected event for debugging
+        controller.addEventListener('connected', (e) => {
+          console.log(`Controller ${i} connected: ${e.data.handedness}`);
+          controller.userData.handedness = e.data.handedness;
+        });
+
+        scene.add(controller);
+
+        // Visual representation (Ray/Line)
+        const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
+        const line = new THREE.Line(geometry);
+        line.name = 'line';
+        line.scale.z = 5;
+        controller.add(line);
+        
+        controllers.push(controller);
+      }
+    }
+
+    function loadSceneBackground() {
+      statusText.innerText = "Loading World1.spz...";
+      
+      // Initialize the Splat Mesh
+      // Note: We pass camera and renderer to help with sorting and rendering
+      splatMesh = new GaussianSplatMesh(camera, renderer);
+      
+      // Load the .spz file
+      splatMesh.load(CONSTANTS.SPZ_URL)
+        .then(() => {
+          // Add to scene
+          scene.add(splatMesh.mesh);
+          
+          // Positioning:
+          // Gaussian Splats are captured from real world coordinates.
+          // You might need to adjust position/rotation to align the floor with WebXR floor.
+          // splatMesh.mesh.position.y = -1.5; // Example: Lower it if camera is too high
+          // splatMesh.mesh.scale.set(1, 1, 1);
+          
+          statusText.innerText = "World Loaded. Ready.";
+          console.log("Splat loaded successfully");
+        })
+        .catch(err => {
+          console.error("Failed to load .spz file:", err);
+          statusText.innerText = "Error loading world (Check console/URL)";
+          
+          // Fallback Grid if file fails
+          const grid = new THREE.GridHelper(10, 10);
+          scene.add(grid);
+        });
+    }
+
+    function onSelectStart(event) {
+      // Handle controller trigger press
+      this.userData.isSelecting = true;
+    }
+
+    function onSelectEnd(event) {
+      this.userData.isSelecting = false;
+    }
+
+    function checkClapToExit() {
+      // Placeholder for Clap-to-exit logic mentioned in original file
+      // Typically involves checking distance/velocity between controllers[0] and controllers[1]
+      if (controllers.length >= 2) {
+        const c1 = controllers[0];
+        const c2 = controllers[1];
+        // Logic would go here
+      }
+    }
+
+    function checkControllerSelection() {
+      // Logic for selection phase
+    }
+
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+
+    function animate() {
+      renderer.setAnimationLoop(render);
+    }
+
+    function render(time, frame) {
+      // 1. Update Splat (Required for sorting based on view angle)
+      if (splatMesh) {
+        splatMesh.update();
+      }
+
+      // 2. Logic hooks
+      if (!isControllerSelectionPhase) {
+        checkClapToExit();
+      } else {
+        checkControllerSelection();
+      }
+
+      // 3. Render
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
